@@ -1,0 +1,4 @@
+chromadb>=0.6.0
+sentence-transformers>=3.0.0
+tqdm>=4.66.0
+mcp>=1.0.0
