@@ -2,3 +2,4 @@
 /_sources/*
 /.idea/
 /__pycache__/
+/.venv/
