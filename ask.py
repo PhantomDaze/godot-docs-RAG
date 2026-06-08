@@ -3,9 +3,12 @@
 Godot 文档向量知识库 — 查询
 =============================
 用法:
-    python ask.py "你的问题"              # 中文/英文都可以
-    python ask.py "信号怎么用" -k 10       # 返回 top-10 结果
-    python ask.py                         # 交互模式
+    python ask.py "你的问题"                           # 中文/英文都可以
+    python ask.py "信号怎么用" -k 10                    # 返回 top-10 结果
+    python ask.py --provider openai "信号"             # 使用 OpenAI API
+    python ask.py --device cuda "动画播放"             # GPU 加速
+    python ask.py --dim 512 "AnimationPlayer"          # 截断向量维度
+    python ask.py --provider local --device cuda       # 交互模式用 GPU
 
 需要先运行 build.py 生成 index_data/ 目录。
 """
@@ -14,7 +17,7 @@ import re
 import sys
 from pathlib import Path
 import chromadb
-from sentence_transformers import SentenceTransformer
+from embedder import get_embedder
 
 
 # ============================================================================
@@ -22,17 +25,6 @@ from sentence_transformers import SentenceTransformer
 # ============================================================================
 
 PERSIST_DIR = Path("index_data")
-LOCAL_MODEL_DIRS = [
-    Path("bge-m3-model"),       # 同级目录
-    Path("../bge-m3"),           # 上级目录
-]
-_MODEL_DIR = None
-for _d in LOCAL_MODEL_DIRS:
-    if _d.exists():
-        _MODEL_DIR = _d
-        break
-MODEL_NAME = "BAAI/bge-m3"                       # HuggingFace 模型（备选）
-MODEL_PATH = str(_MODEL_DIR) if _MODEL_DIR else MODEL_NAME
 COLLECTION_NAME = "godot_docs"
 DEFAULT_TOP_K = 5
 
@@ -44,14 +36,13 @@ DEFAULT_TOP_K = 5
 class GodotDocsSearch:
     """Godot 文档向量检索器。"""
 
-    def __init__(self):
+    def __init__(self, provider=None, device=None, dim=None):
         if not PERSIST_DIR.exists():
             print(f"错误: 找不到索引目录 {PERSIST_DIR.resolve()}")
             print("请先运行 build.py 构建索引。")
             sys.exit(1)
 
-        print(f"加载模型: {MODEL_PATH} ...", file=sys.stderr)
-        self.model = SentenceTransformer(MODEL_PATH, device="cpu")
+        self.embedder = get_embedder(provider, device=device, dim=dim)
 
         print(f"加载索引: {PERSIST_DIR.resolve()} ...", file=sys.stderr)
         self.client = chromadb.PersistentClient(path=str(PERSIST_DIR))
@@ -60,9 +51,9 @@ class GodotDocsSearch:
 
     def search(self, question: str, top_k: int = DEFAULT_TOP_K) -> dict:
         """搜索并返回 ChromaDB 原始结果。"""
-        embedding = self.model.encode([question], show_progress_bar=False)
+        embedding = self.embedder.encode([question])
         return self.collection.query(
-            query_embeddings=embedding.tolist(),
+            query_embeddings=embedding,
             n_results=top_k,
         )
 
@@ -261,6 +252,9 @@ def main():
     question_parts = []
     top_k = DEFAULT_TOP_K
     context_n = 2
+    provider = None
+    device = None
+    dim = None
     i = 1
     while i < len(sys.argv):
         if sys.argv[i] == "-k" and i + 1 < len(sys.argv):
@@ -275,14 +269,44 @@ def main():
         elif sys.argv[i].startswith("-c="):
             context_n = int(sys.argv[i][3:])
             i += 1
+        elif sys.argv[i] == "--provider" and i + 1 < len(sys.argv):
+            provider = sys.argv[i + 1]
+            if provider not in ("local", "openai"):
+                print(f"错误: --provider 必须是 'local' 或 'openai'，收到 '{provider}'",
+                      file=sys.stderr)
+                sys.exit(1)
+            i += 2
+        elif sys.argv[i].startswith("--provider="):
+            provider = sys.argv[i][11:]
+            if provider not in ("local", "openai"):
+                print(f"错误: --provider 必须是 'local' 或 'openai'，收到 '{provider}'",
+                      file=sys.stderr)
+                sys.exit(1)
+            i += 1
+        elif sys.argv[i] == "--device" and i + 1 < len(sys.argv):
+            device = sys.argv[i + 1]
+            if device not in ("cuda", "mps", "cpu"):
+                print(f"错误: --device 必须是 cuda/mps/cpu，收到 '{device}'",
+                      file=sys.stderr)
+                sys.exit(1)
+            i += 2
+        elif sys.argv[i].startswith("--device="):
+            device = sys.argv[i][9:]
+            i += 1
+        elif sys.argv[i] == "--dim" and i + 1 < len(sys.argv):
+            dim = int(sys.argv[i + 1])
+            i += 2
+        elif sys.argv[i].startswith("--dim="):
+            dim = int(sys.argv[i][6:])
+            i += 1
         else:
             question_parts.append(sys.argv[i])
             i += 1
 
     question = " ".join(question_parts).strip()
 
-    # 加载（stderr 输出加载信息）
-    searcher = GodotDocsSearch()
+    # 加载
+    searcher = GodotDocsSearch(provider=provider, device=device, dim=dim)
 
     if question:
         results = searcher.search(question, top_k)

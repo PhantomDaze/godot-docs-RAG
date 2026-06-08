@@ -18,7 +18,7 @@ Linux 上把 cwd 改成对应路径即可。
 import re
 from pathlib import Path
 import chromadb
-from sentence_transformers import SentenceTransformer
+from embedder import get_embedder
 from mcp.server.fastmcp import FastMCP
 
 # ============================================================================
@@ -26,22 +26,12 @@ from mcp.server.fastmcp import FastMCP
 # ============================================================================
 CWD = Path(__file__).parent
 PERSIST_DIR = CWD / "index_data"
-MODEL_DIRS = [CWD / "bge-m3-model", CWD.parent / "bge-m3"]
-MODEL_NAME = "BAAI/bge-m3"
 COLLECTION_NAME = "godot_docs"
 
 # ============================================================================
 # 初始化（模块加载时一次，MCP 启动后立即可用）
 # ============================================================================
-model_path = None
-for d in MODEL_DIRS:
-    if d.exists():
-        model_path = str(d)
-        break
-if model_path is None:
-    model_path = MODEL_NAME
-
-_model = SentenceTransformer(model_path, device="cpu")
+_embedder = get_embedder()
 _collection = chromadb.PersistentClient(path=str(PERSIST_DIR)).get_collection(COLLECTION_NAME)
 
 # ============================================================================
@@ -70,9 +60,9 @@ def search_godot_docs(query: str, top_k: int = 5, context: int = 2) -> str:
         带来源和相似度标注的搜索结果。
     """
     # 编码查询
-    embedding = _model.encode([query], show_progress_bar=False)
+    embedding = _embedder.encode([query])
     results = _collection.query(
-        query_embeddings=embedding.tolist(),
+        query_embeddings=embedding,
         n_results=top_k,
     )
 

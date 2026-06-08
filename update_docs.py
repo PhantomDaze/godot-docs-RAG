@@ -415,6 +415,14 @@ def main():
     print(f"  {'✓ Sync complete!' if not args.dry_run else '(dry run — no files written)'}")
 
 
+def _ensure_scheme(url: str) -> str:
+    """如果 URL 没有协议头，自动补 https://。"""
+    url = url.strip()
+    if url and not re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*://', url):
+        url = "https://" + url
+    return url.rstrip("/")
+
+
 def resolve_custom_source(source_arg: str, github_url: str) -> tuple[str, callable]:
     """
     解析用户指定的 --source 参数。
@@ -426,7 +434,7 @@ def resolve_custom_source(source_arg: str, github_url: str) -> tuple[str, callab
             return name, transform
 
     # 否则视为自定义 URL 前缀
-    raw = source_arg.rstrip("/")
+    raw = _ensure_scheme(source_arg)
     return (f"custom ({raw})", lambda url: f"{raw}/{url}")
 
 

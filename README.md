@@ -1,6 +1,6 @@
 # Godot Docs RAG
 
-Godot 官方文档的离线语义搜索系统。基于 BGE-M3 + ChromaDB，支持中英文混合检索，可直接集成 Claude Code 等 AI 助手。
+Godot 官方文档的离线语义搜索系统。基于 ChromaDB，支持本地 BGE-M3 或 OpenAI 兼容 API，中英文混合检索，可直接集成 Claude Code 等 AI 助手。
 
 ## 快速开始
 
@@ -10,24 +10,27 @@ pip install -r requirements.txt
 # 更新文档源（自动选最快镜像下载）
 python update_docs.py
 
-# 构建索引（首次运行自动下载 BGE-M3 模型 ~2GB，耗时约 10-30 分钟）
+# 构建索引（首次运行需选择嵌入引擎）
 python build.py
 
-# 限制 CPU 核数（适合在服务器上运行）
-python build.py --workers 4
+# 或直接指定：
+python build.py --provider local    # 本地 BGE-M3
+python build.py --provider openai   # OpenAI API
+python build.py --device cuda       # GPU 加速
+python build.py --dim 512           # 截断向量维度
+python build.py --workers 4         # 限制 CPU 核数
 ```
 
 ## 搜索
 
 ```bash
-# 单次查询
 python ask.py "How to use AnimationPlayer" -k 5
-
-# 交互式 REPL
-python ask.py
-
-# 交互命令: /k N 设置结果数  /c N 设置上下文  /stats 统计  /help  /quit
+python ask.py --provider openai "signal"
+python ask.py --device cuda "动画播放"
+python ask.py                      # 交互式 REPL
 ```
+
+交互命令: `/k N` 设置结果数  `/c N` 设置上下文  `/stats` 统计  `/help`  `/quit`
 
 ## 文档源更新
 
@@ -64,72 +67,94 @@ python mcp_server.py
 }
 ```
 
-## 向量模型
+## 嵌入引擎
 
-本项目使用 [BAAI/bge-m3](https://huggingface.co/BAAI/bge-m3) 作为嵌入模型（1024 维，支持多语言）。
+支持两种后端，通过 CLI、`.env` 文件或交互式菜单选择：
 
-### 模型缓存位置
+| 后端 | 命令 | 说明 |
+|------|------|------|
+| 本地 BGE-M3 | `--provider local` | 免费，首次需下载 ~2GB 模型 |
+| OpenAI 兼容 API | `--provider openai` | 按 token 付费，约 $0.05/全量文档 |
 
-`sentence-transformers` 首次加载模型时会自动从 HuggingFace Hub 下载：
+### 选择方式（优先级）
+
+1. **CLI 参数**: `python build.py --provider openai`
+2. **`.env` 文件**: 复制 `.env.example` 为 `.env`，设置 `EMBED_PROVIDER=openai`
+3. **交互菜单**: 无配置且是终端时，自动弹出选择
+
+### GPU 加速
+
+本地 BGE-M3 支持 CUDA (NVIDIA) 和 MPS (Apple Silicon) 加速：
+
+```bash
+python build.py --device cuda     # NVIDIA GPU
+python build.py --device mps      # Apple Silicon
+python ask.py --device cuda        # 查询也用 GPU
+```
+
+不指定则自动检测可用设备，检测不到则 CPU 运行。
+
+可通过 `.env` 的 `EMBED_DEVICE=cuda` 持久化设置。
+
+### 向量维度
+
+BGE-M3 支持维度截断，可大幅降低存储和检索成本：
+
+```bash
+python build.py --dim 256          # 截断到 256 维
+python build.py --dim 512          # 截断到 512 维（默认 1024）
+```
+
+OpenAI `text-embedding-3-small/large` 也支持自定义维度：
+
+```bash
+EMBED_MODEL=text-embedding-3-small python build.py --dim 256
+```
+
+可通过 `.env` 的 `EMBED_DIM=512` 持久化设置。
+
+> ⚠ 切换嵌入引擎或修改维度后必须重建索引。
+
+### OpenAI 配置
+
+在 `.env` 中设置：
+
+```env
+EMBED_PROVIDER=openai
+OPENAI_API_KEY=sk-xxx
+# OPENAI_BASE_URL=https://api.openai.com/v1
+# EMBED_MODEL=text-embedding-3-small
+```
+
+### 本地模型缓存
+
+`BAAI/bge-m3`（1024 维，多语言）：
 
 | 平台 | 缓存路径 |
 |------|----------|
 | Linux / macOS | `~/.cache/huggingface/hub/models--BAAI--bge-m3/` |
 | Windows | `C:\Users\<用户名>\.cache\huggingface\hub\models--BAAI--bge-m3\` |
 
-模型文件约 2.2 GB，下载后只需一次，后续构建和查询均使用缓存。
-
-### 离线部署 / 本地模型
-
-如果需要完全离线运行，可在联网机器下载模型后放入项目目录：
-
-```bash
-# 1. 联网机器上下载模型
-python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-m3')"
-
-# 2. 将缓存目录的内容复制到项目下的 bge-m3-model/
-cp -r ~/.cache/huggingface/hub/models--BAAI--bge-m3/* /path/to/project/bge-m3-model/
-
-# 3. build.py 启动时会优先检测项目目录下的 bge-m3-model/（或 ../bge-m3/）
-#    存在则使用本地文件，不再联网拉取
-python build.py
-```
-
-支持自动检测的本地模型目录（按优先级）：
-1. `./bge-m3-model/`
-2. `../bge-m3/`
-3. 兜底：从 HuggingFace Hub 在线拉取
-
-## 离线部署（查询端）
-
-构建完成后的 `index_data/` 目录可拷贝到其他机器直接使用：
-
-```bash
-# 目标机器只需安装依赖
-pip install chromadb sentence-transformers tqdm
-
-# 把 index_data/ 复制过去，连同 ask.py（或 mcp_server.py）即可查询
-python ask.py "AnimationPlayer" -k 3
-```
-
-> 查询端首次运行同样会自动下载 BGE-M3 模型到缓存目录，也可以按上一节方式预置本地模型。
+**离线部署**: 将模型文件放入 `bge-m3-model/` 目录即可跳过在线下载。
 
 ## 工具一览
 
 | 命令 | 用途 |
 |------|------|
-| `build.py` | 解析 RST → 清洗分块 → BGE-M3 嵌入 → 写入 ChromaDB |
-| `ask.py` | CLI 语义搜索（单次 / REPL） |
+| `build.py` | 解析 RST → 清洗分块 → 嵌入 → 写入 ChromaDB |
+| `ask.py` | CLI 搜索，支持 `--provider` `--device` `--dim` |
 | `mcp_server.py` | MCP 服务器，AI 助手可调用文档搜索 |
 | `update_docs.py` | 从 GitHub 下载最新 Godot 文档并同步 `_sources/` |
 | `finish_build.py` | 构建中断后断点续传 |
+| `embedder.py` | 嵌入引擎统一接口 |
 
 ## 项目结构
 
 ```
-_sources/       Godot 文档 RST 源文件（classes/ tutorials/ 等）
+_sources/       Godot 文档 RST 源文件
 index_data/     ChromaDB 向量索引（自动生成）
-bge-m3-model/   (可选) 本地模型文件，放入后可离线运行
+bge-m3-model/   (可选) 本地模型文件
+.env.example    嵌入引擎配置模板
 ```
 
 ## 许可证

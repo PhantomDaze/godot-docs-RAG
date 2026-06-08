@@ -4,15 +4,14 @@
 import sys
 from pathlib import Path
 import chromadb
-from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
+from embedder import get_embedder
 
 # 复用 build.py 的解析逻辑
 sys.path.insert(0, str(Path(__file__).parent))
 from build import parse_file, merge_small_chunks, split_long_chunks, \
     SOURCE_DIR, PERSIST_DIR, COLLECTION_NAME, CHUNK_MIN_CHARS, CHUNK_MAX_CHARS, SKIP_FILES
 
-MODEL_PATH = "../bge-m3"
 BATCH_SIZE = 100  # 小批量
 EMBED_BATCH = 16
 
@@ -46,18 +45,17 @@ if stored >= len(all_chunks):
 remaining = all_chunks[stored:]
 print(f"待补: {len(remaining)} 块")
 
-print(f"加载模型: {MODEL_PATH}")
-model = SentenceTransformer(MODEL_PATH, device="cpu")
+embedder = get_embedder()
 
 print(f"嵌入并写入 (batch={BATCH_SIZE})...")
 texts = [c["text"] for c in remaining]
 for i in tqdm(range(0, len(remaining), BATCH_SIZE), desc="补完"):
     batch = remaining[i:i + BATCH_SIZE]
     batch_texts = texts[i:i + BATCH_SIZE]
-    embs = model.encode(batch_texts, batch_size=EMBED_BATCH, show_progress_bar=False)
+    embs = embedder.encode(batch_texts, batch_size=EMBED_BATCH)
     collection.add(
         ids=[f"c{stored + j}" for j in range(i, i + len(batch))],
-        embeddings=embs.tolist(),
+        embeddings=embs,
         documents=batch_texts,
         metadatas=[{
             "source": c["source"],

@@ -5,9 +5,11 @@ Godot 文档向量知识库 — 构建脚本
 解析 _sources/ 下的 RST 源文件 → 分块 → BGE-M3 嵌入 → 存入 ChromaDB
 
 用法:
-    python build.py              # 默认行为
-    python build.py --workers 4  # 限制 CPU 核心数
-    python build.py --dry-run    # 只解析不分块，不嵌入，不存储
+    python build.py                    # 默认行为（交互选择嵌入引擎）
+    python build.py --provider openai  # 使用 OpenAI API
+    python build.py --provider local   # 使用本地 BGE-M3
+    python build.py --workers 4        # 限制 CPU 核心数
+    python build.py --dry-run          # 只解析不分块，不嵌入，不存储
 """
 
 import os
@@ -19,7 +21,7 @@ from typing import List, Dict, Optional
 
 from tqdm import tqdm
 import chromadb
-from sentence_transformers import SentenceTransformer
+from embedder import get_embedder, get_provider_name
 
 
 # ============================================================================
@@ -28,19 +30,7 @@ from sentence_transformers import SentenceTransformer
 
 SOURCE_DIR = Path("_sources")
 PERSIST_DIR = Path("index_data")
-LOCAL_MODEL_DIRS = [
-    Path("bge-m3-model"),     # 同级目录
-    Path("../bge-m3"),         # 上级目录
-]
-MODEL_NAME = "BAAI/bge-m3"                     # HuggingFace 模型名（备选）
-# 优先使用本地模型
-_MODEL_DIR = None
-for _d in LOCAL_MODEL_DIRS:
-    if _d.exists():
-        _MODEL_DIR = _d
-        break
-MODEL_PATH = str(_MODEL_DIR) if _MODEL_DIR else MODEL_NAME
-BATCH_SIZE_EMBED = 32          # 嵌入批大小
+BATCH_SIZE_EMBED = 32          # 嵌入批大小（也作为 OpenAI API 单次请求量）
 BATCH_SIZE_DB = 500            # ChromaDB 写入批大小
 CHUNK_MIN_CHARS = 100          # 块最小字符数
 CHUNK_MAX_CHARS = 2000         # 块最大字符数（超过则再切分）
@@ -581,7 +571,6 @@ def build(args: argparse.Namespace):
     print("=" * 60)
     print(f"  源目录:   {SOURCE_DIR}")
     print(f"  输出目录: {PERSIST_DIR}")
-    print(f"  模型:     {MODEL_PATH}")
     print(f"  CPU 限制: {args.workers or '自动'}")
     print()
 
@@ -647,9 +636,10 @@ def build(args: argparse.Namespace):
             print(c["text"][:500])
         return
 
-    # 4. 加载嵌入模型
-    print(f"\n加载嵌入模型: {MODEL_PATH}")
-    model = SentenceTransformer(MODEL_PATH, device="cpu")
+    # 4. 加载嵌入引擎
+    embedder = get_embedder(args.provider, device=args.device, dim=args.dim)
+    print(f"\n嵌入提供商: {get_provider_name()}")
+    print(f"  等待嵌入的块数: {len(all_chunks)}  (~{sum(sizes) // 1000}k 字符)")
 
     # 5. 分批生成嵌入 + 写入 ChromaDB（节省内存）
     CHUNK_EMBED = 2000  # 每批嵌入的文本数
@@ -677,16 +667,12 @@ def build(args: argparse.Namespace):
         chunk_chunks = all_chunks[chunk_start:chunk_end]
 
         # 生成嵌入
-        chunk_embeddings = model.encode(
-            chunk_texts,
-            batch_size=BATCH_SIZE_EMBED,
-            show_progress_bar=False,
-        )
+        chunk_embeddings = embedder.encode(chunk_texts, batch_size=BATCH_SIZE_EMBED)
 
         # 写入
         collection.add(
             ids=[f"c{j}" for j in range(chunk_start, chunk_end)],
-            embeddings=chunk_embeddings.tolist(),
+            embeddings=chunk_embeddings,
             documents=chunk_texts,
             metadatas=[{
                 "source": c["source"],
@@ -714,6 +700,13 @@ def build(args: argparse.Namespace):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Godot 文档向量知识库构建")
+    parser.add_argument("--provider", choices=["local", "openai"], default=None,
+                        help="嵌入引擎: local (BGE-M3) 或 openai")
+    parser.add_argument("--device", default=None,
+                        choices=["cuda", "mps", "cpu"],
+                        help="计算设备: cuda (GPU) / mps (Apple) / cpu (仅 local 有效)")
+    parser.add_argument("--dim", type=int, default=None,
+                        help="向量维度 (默认: 模型原始维度，BGE-M3=1024)")
     parser.add_argument("--workers", type=int, default=None,
                         help="限制 CPU 线程数 (默认自动)")
     parser.add_argument("--dry-run", action="store_true",
